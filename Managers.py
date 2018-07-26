@@ -34,6 +34,7 @@ class ChannelManager:
         # This stores [offset: length] information for all caches for this dataset
         self.cached = {}
         self.user_dict = None
+        self.channel_participants = None
         if channel:
             self.connect(channelName=channel)
 
@@ -50,7 +51,7 @@ class ChannelManager:
     def search_participant(self, query=''):
         pass
 
-    def retrieve_participants(self, limit=100, offset=0):
+    def retrieve_participants(self, limit=100000, offset=0, force_refetch=False):
         """
         Retrieves a list of n to all members of a given channel.
         Checks if there is a connection to a channel already, if not it connects to it using the connect
@@ -62,9 +63,16 @@ class ChannelManager:
         if (limit == None or limit > 10000):
             aggressive = True
 
-        # Cache the Participants to the object
-        print("Fetching channel participants for {}".format(self.channel.title))
-        self.channel_participants = self.client.get_participants(self.channel,  aggressive=aggressive)
+        if os.path.exists('./bin/{}.Participant-list{}-{}.pkl'.format(limit, self.channel.title, limit)) and not force_refetch:
+            with open('./bin/{}.Participant-list{}-{}.pkl'.format(limit, self.channel.title, limit), 'rb') as input:
+                self.channel_participants = pickle.load(input)
+        else:
+            # Cache the Participants to the object
+            print("Fetching {} channel participants for {}".format(limit, self.channel.title))
+            self.channel_participants = self.client.get_participants(self.channel, aggressive=aggressive)
+
+            with open('./bin/{}.Participant-list{}-{}.pkl'.format(limit, self.channel.title, limit), 'wb') as output:
+                pickle.dump(self.channel_participants, output, pickle.HIGHEST_PROTOCOL)
 
     def create_userdict(self, force_refetch=False):
         """
@@ -72,20 +80,21 @@ class ChannelManager:
         Stores the dict on the Object for quick access, additonally caches it to disk
         :return: None
         """
-        if not self.user_dict:
+        if not self.channel_participants:
             self.retrieve_participants()
 
         # Create the dictionary
-        if os.path.exists('./bin/{}-participant-dict.pkl'.format(self.channel.title)):
+        if os.path.exists('./bin/{}-participant-dict-{}.pkl'.format(self.channel.title, len(self.channel_participants))) and not force_refetch:
             print("Loading existing Participant Channel dict from cache")
-            with open('./bin/{}-participant-dict.pkl'.format(self.channel.title), 'rb') as input:
+            with open('./bin/{}-participant-dict-{}.pkl'.format(self.channel.title, len(self.channel_participants)), 'rb') as input:
                 self.user_dict = pickle.load(input)
         else:
             print("Creating new Userdict from Channel List")
             self.user_dict = { participant.id : participant for participant in self.channel_participants }
-            with open('./bin/{}-participant-dict.pkl'.format(self.channel.title), 'wb') as output:
+            with open('./bin/{}-participant-dict-{}.pkl'.format(self.channel.title, len(self.channel_participants)), 'wb') as output:
                 pickle.dump(self.user_dict, output, pickle.HIGHEST_PROTOCOL)
 
+        print("Successfully loaded {} users into the dict".format(len(self.user_dict)))
 
     def list_participants(self, limit=100, offset=0):
         """
@@ -119,21 +128,22 @@ class ChannelManager:
         # 3. Finish the job
         return self.channel_participants
 
-    def restrict_users(self, userlist, type=['bann', 'read-only', 'write-only', 'no-pictures'], limit=None, calls_throttle=29, force_refetch=False):
+    def restrict_users(self, userlist, type=['bann', 'read-only', 'write-only', 'no-pictures'], offset= None,  limit=None, calls_throttle=29, force_refetch=False):
         if not self.user_dict:
             self.create_userdict(force_refetch=force_refetch)
+        n_banned = 0
+        for id, userid in enumerate(userlist):
 
-        for userid in userlist[:limit]:
             try:
                 user = self.user_dict[userid]
-                print("Restricting user {} to {}".format(userid, type))
-                self.restrict_user(user, None, type)
+                self.restrict_user(user, type=type)
+                print("{}: Restricted {} to {}".format(n_banned, user.username, type))
                 # Throttle the requests
                 throttle = 60 / calls_throttle
-                # print("Sleeping for {} seconds".format(throttle))
                 time.sleep(throttle)
+                n_banned += 1
             except:
-                print("User not in channel anymore")
+                if id % 250 == 0: print("So far {} out of {} people additionally banned from the list".format(n_banned, id))
 
 
 
@@ -185,7 +195,7 @@ class ChannelManager:
         }
 
         self.client(EditBannedRequest(
-            self.channel, user, ChannelBannedRights( **dict[type])
+            self.channel, user, ChannelBannedRights(**dict[type])
         ))
 
 
