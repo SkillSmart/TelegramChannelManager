@@ -1,4 +1,6 @@
 # This defines the core functionalities we want to run on the Telegram client
+import os.path
+import time
 from connecting import  connect_client
 from telethon.tl.functions.channels import GetParticipantRequest, GetParticipantsRequest
 from telethon.tl.functions.contacts import ResolveUsernameRequest
@@ -7,6 +9,7 @@ from telethon.tl.types import ChannelParticipantsSearch
 # Imports for banning and restricting access
 from telethon.tl.functions.channels import EditBannedRequest
 from telethon.tl.types import ChannelBannedRights
+
 # Status checking
 from telethon.tl.types import UserStatusOffline, UserStatusOnline, UserStatusRecently
 # Imports for debugging
@@ -30,6 +33,7 @@ class ChannelManager:
         self.me = self.client.get_me()
         # This stores [offset: length] information for all caches for this dataset
         self.cached = {}
+        self.user_dict = None
         if channel:
             self.connect(channelName=channel)
 
@@ -59,7 +63,29 @@ class ChannelManager:
             aggressive = True
 
         # Cache the Participants to the object
+        print("Fetching channel participants for {}".format(self.channel.title))
         self.channel_participants = self.client.get_participants(self.channel,  aggressive=aggressive)
+
+    def create_userdict(self, force_refetch=False):
+        """
+        Creates a dict of all users in the channel supporting the indexing by id
+        Stores the dict on the Object for quick access, additonally caches it to disk
+        :return: None
+        """
+        if not self.user_dict:
+            self.retrieve_participants()
+
+        # Create the dictionary
+        if os.path.exists('./bin/{}-participant-dict.pkl'.format(self.channel.title)):
+            print("Loading existing Participant Channel dict from cache")
+            with open('./bin/{}-participant-dict.pkl'.format(self.channel.title), 'rb') as input:
+                self.user_dict = pickle.load(input)
+        else:
+            print("Creating new Userdict from Channel List")
+            self.user_dict = { participant.id : participant for participant in self.channel_participants }
+            with open('./bin/{}-participant-dict.pkl'.format(self.channel.title), 'wb') as output:
+                pickle.dump(self.user_dict, output, pickle.HIGHEST_PROTOCOL)
+
 
     def list_participants(self, limit=100, offset=0):
         """
@@ -75,7 +101,6 @@ class ChannelManager:
         """
 
         #  1. Check if data is available in cache load it
-        import os.path
         if os.path.exists('./bin/{}_participants-{}-{}.pkl'.format(self.channel.title, offset, limit)) and self.cached.get(offset, 0) <= limit:
             print("Loaded cached participant list of {} users for channel {}".format(limit, self.channel.title))
             with open('./bin/{}_participants-{}-{}.pkl'.format(self.channel.title, offset, limit), 'rb') as input:
@@ -84,6 +109,8 @@ class ChannelManager:
         else:
             print("Starting collection of {} user records from channel {}".format(limit, self.channel.title))
             self.retrieve_participants(limit)
+            if not os.path.exists('./bin'):
+                os.mkdir('./bin')
             with open('./bin/{}_participants-{}-{}.pkl'.format(self.channel.title, offset, limit), 'wb') as output:
                 pickle.dump(self.channel_participants, output, pickle.HIGHEST_PROTOCOL)
             self.cached[offset] = limit
@@ -91,6 +118,23 @@ class ChannelManager:
 
         # 3. Finish the job
         return self.channel_participants
+
+    def restrict_users(self, userlist, type=['bann', 'read-only', 'write-only', 'no-pictures'], limit=None, calls_throttle=29, force_refetch=False):
+        if not self.user_dict:
+            self.create_userdict(force_refetch=force_refetch)
+
+        for userid in userlist[:limit]:
+            try:
+                user = self.user_dict[userid]
+                print("Restricting user {} to {}".format(userid, type))
+                self.restrict_user(user, None, type)
+                # Throttle the requests
+                throttle = 60 / calls_throttle
+                # print("Sleeping for {} seconds".format(throttle))
+                time.sleep(throttle)
+            except:
+                print("User not in channel anymore")
+
 
 
     def restrict_user(self, user, duration=7, type=['bann', 'read-only', 'write-only', 'no-pictures']):
